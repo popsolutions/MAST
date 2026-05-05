@@ -41,3 +41,7 @@ pull/
 push.sh
 pull.sh
 
+
+# AI-coding (VibeCoding) tooling — kept in separate private repo pop/vibecoding
+.claude/
+skills-lock.json
