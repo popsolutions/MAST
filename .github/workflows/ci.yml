@@ -16,11 +16,36 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Verilator
+      - name: Install Verilator build deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y verilator
-          verilator --version
+          sudo apt-get install -y \
+            git make autoconf flex bison \
+            libfl2 libfl-dev zlib1g zlib1g-dev \
+            help2man perl ccache
+
+      - name: Cache Verilator install
+        id: verilator-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/verilator
+          key: verilator-v5.040-${{ runner.os }}-x64
+
+      - name: Build Verilator 5.040 from source (only on cache miss)
+        if: steps.verilator-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --branch v5.040 --depth 1 \
+            https://github.com/verilator/verilator.git /tmp/verilator
+          cd /tmp/verilator
+          autoconf
+          ./configure --prefix=$HOME/.local/verilator
+          make -j$(nproc)
+          make install
+
+      - name: Add Verilator to PATH and verify
+        run: |
+          echo "$HOME/.local/verilator/bin" >> $GITHUB_PATH
+          $HOME/.local/verilator/bin/verilator --version
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
