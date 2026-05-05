@@ -99,3 +99,40 @@ Signal naming convention:
 - [ADR-006 — Internal bus: AXI4](../../../docs/popsolutions/ADRS.md)
 - [ADR-002 — Project topology: MAST trunk + N Sails](../../../docs/popsolutions/ADRS.md)
 - [`docs/popsolutions/architecture/PARAMETER_TAXONOMY.md`](../../../docs/popsolutions/architecture/PARAMETER_TAXONOMY.md)
+
+## Memory loader back-door (since v0.2)
+
+`axi4_mem_model` carries three additional input ports for testbench /
+boot-ROM-style program loading:
+
+| Port | Width | Meaning |
+|---|---|---|
+| `loader_en` | 1 | Pulse high for one cycle to commit a write |
+| `loader_addr` | `phys_addr_width` | **Byte address**, must be 4-byte aligned |
+| `loader_data` | `data_width` (32 bits) | Datum to land in the addressed slot |
+
+**Semantics.** When `loader_en` is high on a rising clock edge, the
+32-bit `loader_data` is written into the correct slot of the targeted
+256-bit cache line. The slot is selected by `loader_addr[4:2]` (which
+of the eight 32-bit slots within the 32-byte line). The cache line
+index is `loader_addr[OFF_WIDTH +: IDX_WIDTH]`.
+
+**Conflict resolution.** The loader write is sequenced as the LAST
+non-blocking assignment in the AXI4 write FSM's `always` block, so on
+simultaneous loader-and-AXI4 writes to the same cache line the loader
+wins by SystemVerilog NBA semantics — not by simulator-specific cross-
+block ordering.
+
+**Alignment enforcement.** A simulation `assert` fires if `loader_addr`
+is not 4-byte aligned (would silently corrupt adjacent slots otherwise).
+
+**Synthesis.** Production builds tie `loader_en` to `1'b0`. The `if
+(loader_en) ...` branch becomes constant-false and standard synthesis
+tools (Yosys, Synopsys, Cadence) prune the entire loader path — no
+backing logic, no extra registers. The unused `loader_addr` and
+`loader_data` input ports may leave port-buffer cells in the netlist
+under hierarchical synthesis flows; this is negligible for our use.
+
+Test wrappers that don't need the back-door tie all three signals to
+constants in their instantiation — see `verif/axi4_master_simple/` and
+`verif/core_axi4_adapter/`.

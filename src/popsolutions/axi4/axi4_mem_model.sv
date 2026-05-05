@@ -96,11 +96,13 @@ module axi4_mem_model #(
     // bit position within the cache line where the 32-bit datum lands
     wire [OFF_WIDTH+2:0]  loader_bit_off  = {loader_byte_off, 3'b000};
 
-    always @(posedge clk) begin
-        if (loader_en) begin
-            mem[loader_idx][loader_bit_off +: data_width] <= loader_data;
-        end
-    end
+    // The actual loader write is sequenced AT THE END of the AXI4 write
+    // FSM's always block (see write side FSM below). This guarantees that
+    // when the loader and the AXI4 write fire in the same cycle on the
+    // same cache line, the loader's NBA is the LAST one in the procedural
+    // step and therefore wins by SystemVerilog NBA semantics — not by
+    // simulator-specific cross-block ordering. Production synthesis with
+    // loader_en tied to 0 prunes the loader branch entirely.
 
     // ====================================================================
     // Write side FSM
@@ -192,6 +194,23 @@ module axi4_mem_model #(
 
                 default: wr_state <= WR_IDLE;
             endcase
+
+            // ============================================================
+            // Loader back-door write — placed AT THE END of this block so
+            // its NBA fires after the AXI4 FSM's NBAs in the same step.
+            // Loader-wins-on-conflict is therefore deterministic.
+            // ============================================================
+            if (loader_en) begin
+                // Misaligned loader_addr would silently corrupt adjacent
+                // 32-bit slots (or write past bit 255 of the cache line).
+                // Catch this in simulation before it propagates.
+                assert (loader_addr[1:0] == 2'b00)
+                    else $error(
+                        "axi4_mem_model: loader_addr 0x%0h not 4-byte aligned",
+                        loader_addr
+                    );
+                mem[loader_idx][loader_bit_off +: data_width] <= loader_data;
+            end
         end
     end
 
