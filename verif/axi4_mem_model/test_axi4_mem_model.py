@@ -52,6 +52,11 @@ async def reset_dut(dut):
     dut.s_arvalid.value = 0
     dut.s_rready.value = 0
 
+    # loader back-door (added with the program-loading feature)
+    dut.loader_en.value = 0
+    dut.loader_addr.value = 0
+    dut.loader_data.value = 0
+
     for _ in range(5):
         await RisingEdge(dut.clk)
     dut.rst_n.value = 1
@@ -240,3 +245,51 @@ async def test_byte_strobed_partial_write(dut):
     expected = (initial & ~0xFFFFFFFF) | 0xFFFFFFFF
     assert beats[0] == expected, \
         f"strobed write mismatch:\n  expected {expected:064x}\n  got      {beats[0]:064x}"
+
+
+@cocotb.test()
+async def test_loader_then_axi4_read(dut):
+    """Back-door loader writes 32-bit words by byte address; AXI4 reads see them.
+
+    This is the program-loading path used by inner_jib_top tests:
+    pre-populate the SRAM with instruction words via loader_en, then let
+    the core (or master) fetch them through the AXI4 interface as if
+    the words had always been there.
+    """
+    cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_NS, units="ns").start())
+    await reset_dut(dut)
+
+    # Load 4 distinct 32-bit words across two consecutive 32-byte cache lines:
+    #   byte addr 0x80 (line 4, slot 0): 0xCAFEBABE
+    #   byte addr 0x84 (line 4, slot 1): 0xFEEDFACE
+    #   byte addr 0x88 (line 4, slot 2): 0xDEADBEEF
+    #   byte addr 0xA0 (line 5, slot 0): 0x12345678
+    plan = [
+        (0x80, 0xCAFEBABE),
+        (0x84, 0xFEEDFACE),
+        (0x88, 0xDEADBEEF),
+        (0xA0, 0x12345678),
+    ]
+    for addr, word in plan:
+        dut.loader_en.value = 1
+        dut.loader_addr.value = addr
+        dut.loader_data.value = word
+        await RisingEdge(dut.clk)
+    dut.loader_en.value = 0
+    await RisingEdge(dut.clk)
+
+    # Read line 4 (addr 0x80) via AXI4; expect the lower 96 bits to hold
+    # CAFEBABE | FEEDFACE | DEADBEEF in slots 0/1/2, and slots 3..7 to be
+    # untouched (X in Verilator initial; treat as don't-care here).
+    rresp, _, beats = await axi_read(dut, addr=0x80)
+    assert rresp == AXI4_RESP_OKAY
+    line4 = beats[0]
+    assert (line4 >> 0)  & 0xFFFFFFFF == 0xCAFEBABE, f"slot 0: {(line4>>0)&0xFFFFFFFF:08x}"
+    assert (line4 >> 32) & 0xFFFFFFFF == 0xFEEDFACE, f"slot 1: {(line4>>32)&0xFFFFFFFF:08x}"
+    assert (line4 >> 64) & 0xFFFFFFFF == 0xDEADBEEF, f"slot 2: {(line4>>64)&0xFFFFFFFF:08x}"
+
+    # Read line 5 (addr 0xA0) via AXI4; expect slot 0 = 0x12345678.
+    rresp, _, beats = await axi_read(dut, addr=0xA0)
+    assert rresp == AXI4_RESP_OKAY
+    line5 = beats[0]
+    assert (line5 >> 0) & 0xFFFFFFFF == 0x12345678, f"slot 0: {(line5>>0)&0xFFFFFFFF:08x}"
