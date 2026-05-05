@@ -62,7 +62,16 @@ module axi4_mem_model #(
     output reg  [axi4_resp_width-1:0]  s_rresp,
     output reg                         s_rlast,
     output reg                         s_rvalid,
-    input  wire                        s_rready
+    input  wire                        s_rready,
+
+    // -------- testbench / boot loader back-door --------
+    // Synchronous 32-bit-word write into the backing SRAM by byte address.
+    // Intended ONLY for testbench program loading and (optionally) on-chip
+    // bootrom-style initialisation. Tie loader_en to 0 in synthesis builds
+    // that do not need the back-door.
+    input  wire                        loader_en,
+    input  wire [phys_addr_width-1:0]  loader_addr,
+    input  wire [data_width-1:0]       loader_data
 );
 
     localparam int IDX_WIDTH = (DEPTH_WORDS <= 1) ? 1 : $clog2(DEPTH_WORDS);
@@ -70,6 +79,28 @@ module axi4_mem_model #(
 
     // Backing storage (one entry per cache line)
     reg [mem_data_width-1:0] mem [0:DEPTH_WORDS-1];
+
+    // ====================================================================
+    // Loader back-door: 32-bit word writes by byte address
+    // ====================================================================
+    // Lands the 32-bit datum in the correct slot of the 256-bit cache line:
+    //   slot byte offset = loader_addr[OFF_WIDTH-1:0] (must be 4-byte aligned)
+    //   cache line index = loader_addr[OFF_WIDTH +: IDX_WIDTH]
+    // No handshake — caller must hold loader_addr/loader_data stable for one
+    // clock with loader_en=1. The loader path runs in parallel with the AXI4
+    // write FSM; if both target the same cache line in the same cycle, the
+    // loader wins (testbench convention). Production loader_en is tied 0.
+
+    wire [IDX_WIDTH-1:0]  loader_idx      = loader_addr[OFF_WIDTH +: IDX_WIDTH];
+    wire [OFF_WIDTH-1:0]  loader_byte_off = loader_addr[OFF_WIDTH-1:0];
+    // bit position within the cache line where the 32-bit datum lands
+    wire [OFF_WIDTH+2:0]  loader_bit_off  = {loader_byte_off, 3'b000};
+
+    always @(posedge clk) begin
+        if (loader_en) begin
+            mem[loader_idx][loader_bit_off +: data_width] <= loader_data;
+        end
+    end
 
     // ====================================================================
     // Write side FSM

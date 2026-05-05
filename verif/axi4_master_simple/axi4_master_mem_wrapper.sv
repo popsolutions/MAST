@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: CERN-OHL-S-2.0
 // Copyright (c) 2026 PopSolutions Cooperative
 //
-// Test wrapper: instantiates axi4_master_simple connected to axi4_mem_model
-// over the AXI4 5-channel bundle. Exposes the master's user-side req/resp
-// interface as the testbench-visible top-level.
-//
-// Used only by verif/axi4_master_simple/ — not part of the deliverable RTL.
+// Test wrapper: full request chain from a user-side req/resp interface
+// through axi4_master_simple over AXI4 to axi4_mem_model. Used only by
+// verif/axi4_master_simple/.
 
 `default_nettype none
 
@@ -24,40 +22,35 @@ module axi4_master_mem_wrapper (
     output wire                        req_err
 );
 
-    // AXI4 channels between master and mem
-    wire [axi4_id_width-1:0]    axi_awid;
-    wire [phys_addr_width-1:0]  axi_awaddr;
-    wire [axi4_len_width-1:0]   axi_awlen;
-    wire [axi4_size_width-1:0]  axi_awsize;
-    wire [axi4_burst_width-1:0] axi_awburst;
-    wire                        axi_awvalid;
-    wire                        axi_awready;
-
-    wire [mem_data_width-1:0]   axi_wdata;
-    wire [axi4_strb_width-1:0]  axi_wstrb;
-    wire                        axi_wlast;
-    wire                        axi_wvalid;
-    wire                        axi_wready;
-
-    wire [axi4_id_width-1:0]    axi_bid;
-    wire [axi4_resp_width-1:0]  axi_bresp;
-    wire                        axi_bvalid;
-    wire                        axi_bready;
-
-    wire [axi4_id_width-1:0]    axi_arid;
-    wire [phys_addr_width-1:0]  axi_araddr;
-    wire [axi4_len_width-1:0]   axi_arlen;
-    wire [axi4_size_width-1:0]  axi_arsize;
-    wire [axi4_burst_width-1:0] axi_arburst;
-    wire                        axi_arvalid;
-    wire                        axi_arready;
-
-    wire [axi4_id_width-1:0]    axi_rid;
-    wire [mem_data_width-1:0]   axi_rdata;
-    wire [axi4_resp_width-1:0]  axi_rresp;
-    wire                        axi_rlast;
-    wire                        axi_rvalid;
-    wire                        axi_rready;
+    wire [axi4_id_width-1:0]    ax_awid;
+    wire [phys_addr_width-1:0]  ax_awaddr;
+    wire [axi4_len_width-1:0]   ax_awlen;
+    wire [axi4_size_width-1:0]  ax_awsize;
+    wire [axi4_burst_width-1:0] ax_awburst;
+    wire                        ax_awvalid;
+    wire                        ax_awready;
+    wire [mem_data_width-1:0]   ax_wdata;
+    wire [axi4_strb_width-1:0]  ax_wstrb;
+    wire                        ax_wlast;
+    wire                        ax_wvalid;
+    wire                        ax_wready;
+    wire [axi4_id_width-1:0]    ax_bid;
+    wire [axi4_resp_width-1:0]  ax_bresp;
+    wire                        ax_bvalid;
+    wire                        ax_bready;
+    wire [axi4_id_width-1:0]    ax_arid;
+    wire [phys_addr_width-1:0]  ax_araddr;
+    wire [axi4_len_width-1:0]   ax_arlen;
+    wire [axi4_size_width-1:0]  ax_arsize;
+    wire [axi4_burst_width-1:0] ax_arburst;
+    wire                        ax_arvalid;
+    wire                        ax_arready;
+    wire [axi4_id_width-1:0]    ax_rid;
+    wire [mem_data_width-1:0]   ax_rdata;
+    wire [axi4_resp_width-1:0]  ax_rresp;
+    wire                        ax_rlast;
+    wire                        ax_rvalid;
+    wire                        ax_rready;
 
     axi4_master_simple master (
         .clk(clk), .rst_n(rst_n),
@@ -65,43 +58,38 @@ module axi4_master_mem_wrapper (
         .req_wstrb(req_wstrb), .req_start(req_start),
         .req_busy(req_busy), .req_done(req_done),
         .req_rdata(req_rdata), .req_err(req_err),
-
-        .m_awid(axi_awid), .m_awaddr(axi_awaddr), .m_awlen(axi_awlen),
-        .m_awsize(axi_awsize), .m_awburst(axi_awburst),
-        .m_awvalid(axi_awvalid), .m_awready(axi_awready),
-
-        .m_wdata(axi_wdata), .m_wstrb(axi_wstrb), .m_wlast(axi_wlast),
-        .m_wvalid(axi_wvalid), .m_wready(axi_wready),
-
-        .m_bid(axi_bid), .m_bresp(axi_bresp),
-        .m_bvalid(axi_bvalid), .m_bready(axi_bready),
-
-        .m_arid(axi_arid), .m_araddr(axi_araddr), .m_arlen(axi_arlen),
-        .m_arsize(axi_arsize), .m_arburst(axi_arburst),
-        .m_arvalid(axi_arvalid), .m_arready(axi_arready),
-
-        .m_rid(axi_rid), .m_rdata(axi_rdata), .m_rresp(axi_rresp),
-        .m_rlast(axi_rlast), .m_rvalid(axi_rvalid), .m_rready(axi_rready)
+        .m_awid(ax_awid), .m_awaddr(ax_awaddr), .m_awlen(ax_awlen),
+        .m_awsize(ax_awsize), .m_awburst(ax_awburst),
+        .m_awvalid(ax_awvalid), .m_awready(ax_awready),
+        .m_wdata(ax_wdata), .m_wstrb(ax_wstrb), .m_wlast(ax_wlast),
+        .m_wvalid(ax_wvalid), .m_wready(ax_wready),
+        .m_bid(ax_bid), .m_bresp(ax_bresp),
+        .m_bvalid(ax_bvalid), .m_bready(ax_bready),
+        .m_arid(ax_arid), .m_araddr(ax_araddr), .m_arlen(ax_arlen),
+        .m_arsize(ax_arsize), .m_arburst(ax_arburst),
+        .m_arvalid(ax_arvalid), .m_arready(ax_arready),
+        .m_rid(ax_rid), .m_rdata(ax_rdata), .m_rresp(ax_rresp),
+        .m_rlast(ax_rlast), .m_rvalid(ax_rvalid), .m_rready(ax_rready)
     );
 
     axi4_mem_model #(.DEPTH_WORDS(256)) mem (
         .clk(clk), .rst_n(rst_n),
-        .s_awid(axi_awid), .s_awaddr(axi_awaddr), .s_awlen(axi_awlen),
-        .s_awsize(axi_awsize), .s_awburst(axi_awburst),
-        .s_awvalid(axi_awvalid), .s_awready(axi_awready),
-
-        .s_wdata(axi_wdata), .s_wstrb(axi_wstrb), .s_wlast(axi_wlast),
-        .s_wvalid(axi_wvalid), .s_wready(axi_wready),
-
-        .s_bid(axi_bid), .s_bresp(axi_bresp),
-        .s_bvalid(axi_bvalid), .s_bready(axi_bready),
-
-        .s_arid(axi_arid), .s_araddr(axi_araddr), .s_arlen(axi_arlen),
-        .s_arsize(axi_arsize), .s_arburst(axi_arburst),
-        .s_arvalid(axi_arvalid), .s_arready(axi_arready),
-
-        .s_rid(axi_rid), .s_rdata(axi_rdata), .s_rresp(axi_rresp),
-        .s_rlast(axi_rlast), .s_rvalid(axi_rvalid), .s_rready(axi_rready)
+        .s_awid(ax_awid), .s_awaddr(ax_awaddr), .s_awlen(ax_awlen),
+        .s_awsize(ax_awsize), .s_awburst(ax_awburst),
+        .s_awvalid(ax_awvalid), .s_awready(ax_awready),
+        .s_wdata(ax_wdata), .s_wstrb(ax_wstrb), .s_wlast(ax_wlast),
+        .s_wvalid(ax_wvalid), .s_wready(ax_wready),
+        .s_bid(ax_bid), .s_bresp(ax_bresp),
+        .s_bvalid(ax_bvalid), .s_bready(ax_bready),
+        .s_arid(ax_arid), .s_araddr(ax_araddr), .s_arlen(ax_arlen),
+        .s_arsize(ax_arsize), .s_arburst(ax_arburst),
+        .s_arvalid(ax_arvalid), .s_arready(ax_arready),
+        .s_rid(ax_rid), .s_rdata(ax_rdata), .s_rresp(ax_rresp),
+        .s_rlast(ax_rlast), .s_rvalid(ax_rvalid), .s_rready(ax_rready),
+        // loader unused in this wrapper
+        .loader_en(1'b0),
+        .loader_addr('0),
+        .loader_data('0)
     );
 
 endmodule
