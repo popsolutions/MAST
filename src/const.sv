@@ -92,9 +92,9 @@ parameter virt_addr_width = 48;
 // `-D` defines. Defaults below match InnerJib7EA (POPC_16A): 1 CU, 4 SIMD
 // lanes — small enough to fit in a Skywater 130nm Open MPW shuttle slot.
 //
-// To override at compile time:
-//   verilator -DMAST_CU_COUNT=4 -DMAST_SIMD_LANES=8 ...
-//   iverilog -DMAST_CU_COUNT=4 ...
+// To override at compile time, pass to the simulator command line:
+//   -DMAST_CU_COUNT=4 -DMAST_SIMD_LANES=8
+// (works with Verilator, iverilog, yosys.)
 
 `ifndef MAST_CU_COUNT
 `define MAST_CU_COUNT 1

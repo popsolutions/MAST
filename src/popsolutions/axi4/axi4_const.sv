@@ -10,8 +10,8 @@
 // its declarations globally visible in the iverilog/verilator/yosys
 // compilation unit.
 //
-// Tooling: requires SystemVerilog 2012 mode. Tested with iverilog -g2012 and
-// Verilator >= 4.200.
+// Tooling: requires SystemVerilog 2012 mode. Tested with iverilog using
+// the -g2012 flag, and with the Verilator simulator at version 4.200+.
 
 // --- AXI4 profile parameters ---
 
