@@ -109,14 +109,31 @@ Every PR follows:
 5. Reviewer or a maintainer merges when no CRITICAL or HIGH findings
    remain.
 
-**Self-review note for solo / AI-assisted development phase.** The
-project is currently developed by a small team (in practice, one person
-plus an AI agent acting as both author and reviewer). During this
-phase, the AI agent is explicitly responsible for running an
-independent review pass on every PR it authors before merging — using
-the project's `code-reviewer` agent or the language-specific reviewer
-where appropriate. This bridge applies until the cooperative grows
-enough contributors to have human-only review by default.
+**Self-review bridge for the solo / AI-assisted development phase.**
+The project is currently developed by one cooperative member (the
+human user) plus an AI agent acting as code author. During this phase
+the AI agent is explicitly responsible for running an independent
+review pass on every PR it authors, using the project's
+`code-reviewer` agent (or the language-specific reviewer where
+appropriate). Two enforceable constraints govern this bridge:
+
+1. **Findings must surface to the human.** Any CRITICAL or HIGH
+   severity finding from the AI reviewer must be left as a visible
+   comment on the PR before merge, even if the AI agent also
+   addresses the finding on the same branch. The human user must be
+   able to see the original finding without having to dig through
+   code-reviewer agent transcripts.
+
+2. **No AI self-merge.** The AI agent may not press the merge button
+   on its own PRs during this phase. Merge authority during the solo
+   / AI-assisted phase is reserved to the human user. The AI agent's
+   role is to author, self-review, surface findings, address blocking
+   issues, and recommend merge or block; the human user makes the
+   final merge decision.
+
+This bridge applies until the cooperative grows enough contributors
+to have human-only review by default. At that point the bridge is
+removed by amendment per the process at the bottom of this document.
 
 ## Tape-out authority
 
@@ -131,10 +148,39 @@ multi-year obligations. Authority is **dual sign-off**:
   — confirms funds are available, foundry contract is in order, and
   any partnership obligations are met.
 
+**Definition of "technical lead".** The technical lead for a given
+tape-out is, by default, the founding cooperative member who initiated
+the project (Marcos Méndez during the bootstrap phase). The board may
+reassign the role to any current core maintainer by recorded vote.
+There is no scenario in which the role is vacant and tape-out can
+proceed; if the appointed technical lead is unavailable, the board
+must designate a replacement before sign-off. The role exists in
+addition to — and is distinct from — the "tape-out coordinator"
+position in the role ladder above; tape-out coordinator is a process
+role (paperwork, foundry liaison) while technical lead is the
+substantive sign-off authority for design correctness.
+
 Both signatures must be recorded in
 `docs/popsolutions/tape-outs/<tape-out-id>.md` before the design is
 sent. Either signature alone is insufficient. Either signature can be
 withdrawn for cause prior to fab handoff, blocking the tape-out.
+
+**Signature format until `TAPE_OUT_AUTHORITY.md` lands.** Until that
+operational document defines a formal record format, signatures are
+acceptable in either of two forms:
+
+- A GPG-signed git commit creating
+  `docs/popsolutions/tape-outs/<id>.md` with the signer named in
+  the commit metadata and the commit message stating the role the
+  signature represents (e.g., *"sign-off as technical lead for
+  tape-out 7EA-001"*).
+- A PR review comment on the tape-out submission PR, by the
+  responsible party, explicitly citing
+  `Approved as <role> for tape-out <id>`.
+
+Both forms are auditable in git history. `TAPE_OUT_AUTHORITY.md` may
+later supersede this fallback with a more formal procedure; until
+then, neither form is privileged over the other.
 
 ## Code of Conduct enforcement
 
