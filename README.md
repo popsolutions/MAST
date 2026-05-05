@@ -14,6 +14,38 @@ This project is a fork of [hughperkins/VeriGPU](https://github.com/hughperkins/V
 
 PopSolutions is a Brazilian digital cooperative. See [popsolutions.co](https://popsolutions.co).
 
+## Status
+
+[![ci](https://github.com/popsolutions/MAST/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/popsolutions/MAST/actions/workflows/ci.yml)
+
+**Tests passing: 15/15 across 3 verified modules.** See [`verif/HOW_TO_VERIFY.md`](verif/HOW_TO_VERIFY.md) for a plain-language guide to checking this for yourself (no SystemVerilog required — just one command).
+
+### Verified modules
+
+```mermaid
+graph LR
+    Core["upstream core.sv<br/>(RISC-V, 32-bit words)"]
+    Core --> Adapter["core_axi4_adapter<br/>32 to 256-bit bridge<br/>5 tests OK"]
+    Adapter -->|"req / done"| Master["axi4_master_simple<br/>single-shot master<br/>5 tests OK"]
+    Master -->|"AXI4 5-channel"| Mem["axi4_mem_model<br/>internal SRAM<br/>5 tests OK"]
+```
+
+The full request chain — from the upstream RISC-V core's bespoke memory interface, through MAST's AXI4 subsystem, all the way to a behavioural memory model — is verified end-to-end in cocotb / Verilator.
+
+### Sprint progress (FPGA-first prototype path)
+
+| Sprint | Goal | Status |
+|---|---|---|
+| **A** | AXI4 master skeleton + cocotb harness | Done — 10 tests passing |
+| **B** | Bridge upstream `core.sv` to AXI4 | Done — 5 tests passing |
+| **C** | `inner_jib_top.sv` integration in InnerJib7EA | Next |
+| **D** | Verilator end-to-end with `sum_ints.asm` running on the upstream core | Pending Sprint C |
+| **E** | FPGA target board pick (Arty A7 / ULX3S / Kintex) | Pending |
+| **F** | First bitstream on real FPGA hardware | Pending |
+| **G** | TinyLlama-1.1B int4 reference workload on FPGA | Pending |
+| **H** | Skywater 130nm Open MPW tape-out submission | 6–12 months out |
+
+
 ## What is MAST?
 
 MAST holds the shared IP that every Sail product depends on:

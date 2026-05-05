@@ -1,0 +1,63 @@
+# SPDX-License-Identifier: CC-BY-SA-4.0
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  verilator-cocotb:
+    name: Verilator + cocotb tests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Verilator
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y verilator
+          verilator --version
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install cocotb
+        run: |
+          python -m pip install --upgrade pip
+          pip install cocotb cocotb-bus pytest
+          cocotb-config --version
+
+      - name: Run axi4_mem_model tests
+        run: |
+          cd verif/axi4_mem_model
+          make
+
+      - name: Run axi4_master_simple tests
+        run: |
+          cd verif/axi4_master_simple
+          make
+
+      - name: Run core_axi4_adapter tests
+        run: |
+          cd verif/core_axi4_adapter
+          make
+
+      - name: Summarize
+        if: always()
+        run: |
+          echo "## Test summary" >> $GITHUB_STEP_SUMMARY
+          for d in verif/axi4_mem_model verif/axi4_master_simple verif/core_axi4_adapter; do
+            if [ -f "$d/results.xml" ]; then
+              passed=$(grep -oE 'tests="[0-9]+"' "$d/results.xml" | head -1 | grep -oE '[0-9]+')
+              failed=$(grep -oE 'failures="[0-9]+"' "$d/results.xml" | head -1 | grep -oE '[0-9]+')
+              echo "- \`$d\`: $passed tests, $failed failures" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "- \`$d\`: no results.xml (test build failed?)" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
