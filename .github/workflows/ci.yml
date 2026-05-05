@@ -75,14 +75,17 @@ jobs:
 
       - name: Summarize
         if: always()
+        shell: bash {0}     # no -e — grep returns 1 on no-match, that is OK here
         run: |
-          echo "## Test summary" >> $GITHUB_STEP_SUMMARY
-          for d in verif/axi4_mem_model verif/axi4_master_simple verif/core_axi4_adapter; do
-            if [ -f "$d/results.xml" ]; then
-              passed=$(grep -oE 'tests="[0-9]+"' "$d/results.xml" | head -1 | grep -oE '[0-9]+')
-              failed=$(grep -oE 'failures="[0-9]+"' "$d/results.xml" | head -1 | grep -oE '[0-9]+')
-              echo "- \`$d\`: $passed tests, $failed failures" >> $GITHUB_STEP_SUMMARY
-            else
-              echo "- \`$d\`: no results.xml (test build failed?)" >> $GITHUB_STEP_SUMMARY
-            fi
-          done
+          {
+            echo "## Test summary"
+            for d in verif/axi4_mem_model verif/axi4_master_simple verif/core_axi4_adapter; do
+              if [ -f "$d/results.xml" ]; then
+                passed=$(grep -oE 'tests="[0-9]+"' "$d/results.xml" | head -1 | grep -oE '[0-9]+' || echo "?")
+                failed=$(grep -oE 'failures="[0-9]+"' "$d/results.xml" | head -1 | grep -oE '[0-9]+' || echo "?")
+                echo "- \`$d\`: $passed tests, $failed failures"
+              else
+                echo "- \`$d\`: no results.xml (test build failed?)"
+              fi
+            done
+          } >> $GITHUB_STEP_SUMMARY
