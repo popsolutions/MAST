@@ -124,12 +124,37 @@ appropriate). Two enforceable constraints govern this bridge:
    able to see the original finding without having to dig through
    code-reviewer agent transcripts.
 
-2. **No AI self-merge.** The AI agent may not press the merge button
-   on its own PRs during this phase. Merge authority during the solo
-   / AI-assisted phase is reserved to the human user. The AI agent's
-   role is to author, self-review, surface findings, address blocking
-   issues, and recommend merge or block; the human user makes the
-   final merge decision.
+2. **AI self-merge is delegated by the founding member during the
+   bootstrap phase.** The original draft of this clause prohibited AI
+   self-merge. The founding cooperative member has explicitly
+   delegated merge authority to the AI agent for routine engineering
+   PRs, and the delegation is documented in the project's private
+   memory store with date and rationale. The delegation is bounded:
+
+   - **In scope** (AI may merge after the self-review steps above):
+     - RTL changes, software changes, verification additions
+     - Project-internal documentation
+     - CI / tooling / test fixtures
+     - Refactoring and cleanup
+     - Dependency / submodule pin bumps that follow a green CI run
+
+   - **Out of scope** (still requires explicit human action):
+     - Strategic decisions: license, governance itself, MVP target
+       redefinition, mission statement
+     - Tape-out submissions to silicon foundries — the dual sign-off
+       in `TAPE_OUT_AUTHORITY.md` requires both signatures and the
+       AI cannot satisfy either
+     - Public statements, marketing copy, partnership commitments,
+       financial commitments — all owned by the cooperative board
+     - Force-pushes to `main`, history rewrites, repo deletions, or
+       any other destructive operation
+     - Granting cooperative membership or role-ladder promotions
+
+   The human user retains the right to revert any merge they
+   disagree with; this delegation is trust, not abdication. If the
+   user pushes back on a merge after the fact, the agent must treat
+   that as a strong signal to recalibrate what blocks vs. what
+   doesn't, and update the project's private memory accordingly.
 
 This bridge applies until the cooperative grows enough contributors
 to have human-only review by default. At that point the bridge is
