@@ -221,6 +221,29 @@ module global_mem_controller (
     end
 
     // ===================================================================
+    // Arbiter invariant (MAST issue #24).
+    //
+    // `contr_rd_inflight` and `contr_rd_pending` MUST never be high in
+    // the same cycle. The state machine above guarantees this by clearing
+    // `contr_rd_pending` in the same cycle `grant_contr_rd` sets
+    // `contr_rd_inflight`. Both being high simultaneously would mean a
+    // contr_rd is mid-AXI4-transaction AND another is queued behind it —
+    // a state the response demultiplexer is not designed to handle, and
+    // a sign that a future refactor has broken the grant logic (e.g.
+    // someone changed the grant condition without clearing pending).
+    //
+    // Wrapped in `ifndef SYNTHESIS` so synthesis tools that don't grok
+    // SystemVerilog concurrent assertions skip it cleanly. Verilator 5.x
+    // accepts `assert property` by default (assertions are on unless
+    // `--no-assert` is passed), so no Makefile change is required.
+    `ifndef SYNTHESIS
+        assert property (@(posedge clk) disable iff (!rst)
+            !(contr_rd_inflight && contr_rd_pending))
+            else $error("[%0t] global_mem_controller: arbiter invariant violated — contr_rd_inflight && contr_rd_pending both high",
+                        $time);
+    `endif
+
+    // ===================================================================
     // Response demultiplex: ack / rd_data are routed to whichever
     // requester is currently tracked. core1_busy stays asserted whenever
     // the adapter is busy AND the in-flight transaction belongs to core1
