@@ -89,3 +89,57 @@ jobs:
               fi
             done
           } >> $GITHUB_STEP_SUMMARY
+
+  yosys-ecp5-smoke:
+    name: yosys synth_ecp5 smoke (closes #36)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache OSS CAD Suite
+        id: oss-cad-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/oss-cad-suite
+          key: oss-cad-suite-2026-05-06-${{ runner.os }}-x64
+
+      - name: Download OSS CAD Suite (only on cache miss)
+        if: steps.oss-cad-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/.local
+          wget -q https://github.com/YosysHQ/oss-cad-suite-build/releases/download/2026-05-06/oss-cad-suite-linux-x64-20260506.tgz \
+            -O /tmp/oss-cad-suite.tgz
+          tar -xzf /tmp/oss-cad-suite.tgz -C ~/.local
+          rm /tmp/oss-cad-suite.tgz
+
+      - name: Add OSS CAD Suite to PATH and verify yosys version
+        run: |
+          echo "$HOME/.local/oss-cad-suite/bin" >> $GITHUB_PATH
+          $HOME/.local/oss-cad-suite/bin/yosys -V
+
+      - name: Run synth_ecp5 smoke pass on src/int/mul_pipeline_32bit.sv
+        run: |
+          # Smoke-tests the open ECP5 synth path against a rev-A RTL module.
+          # Picks a self-contained module (mul_pipeline_32bit) so the smoke
+          # test does not pull in the AXI4 fabric. If this passes, the
+          # yosys + lattice techlib half of the open ECP5 flow is live for
+          # rev-A. See cicd/Dockerfile and #36.
+          mkdir -p /tmp/smoke
+          yosys -p "read_verilog -sv src/int/mul_pipeline_32bit.sv; synth_lattice -family ecp5 -top mul_pipeline_32bit; write_json /tmp/smoke/mul_pipeline_32bit.json" \
+            | tee /tmp/smoke/yosys.log
+          test -s /tmp/smoke/mul_pipeline_32bit.json
+          {
+            echo "## yosys ECP5 smoke result"
+            echo ""
+            echo "- yosys version: \`$(yosys -V | head -1)\`"
+            echo "- json size: \`$(wc -c < /tmp/smoke/mul_pipeline_32bit.json) bytes\`"
+          } >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload smoke artefacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yosys-ecp5-smoke
+          path: /tmp/smoke/
+          if-no-files-found: warn

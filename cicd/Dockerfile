@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: CC-BY-SA-4.0
 # this is used for cicd
 
 FROM ubuntu:20.04
@@ -74,13 +75,26 @@ RUN wget ftp://ftp.icarus.com/pub/eda/verilog//v11/verilog-11.0.tar.gz && \
 #     cd .. && \
 #     rm -Rf iverilog
 
-# yosys
-RUN wget https://github.com/YosysHQ/yosys/archive/refs/tags/yosys-0.15.tar.gz && \
-    tar -xf yosys-0.15.tar.gz && cd yosys-yosys-0.15 && \
-    make -j $(nproc) && \
-    make install && \
-    cd .. && \
-    rm -Rf yosys-yosys-0.15
+# yosys + nextpnr-ecp5 + prjtrellis (via OSS CAD Suite)
+#
+# Replaces the 2021-vintage `yosys-0.15.tar.gz` source build (closes #36).
+# OSS CAD Suite ships yosys + nextpnr + prjtrellis (and verilator, iverilog,
+# cocotb-ext) as one date-pinned tarball, which is what every production open-
+# FPGA ECP5 reference (OrangeCrab, Trellis Board, ULX3S, Versa-ECP5, ECPIX-5,
+# LiteX) actually uses. See docs/upstream-contributions/2026-05-06-yosys-ecp5.md
+# (Stays #33) for the day-1 recon that surfaced this upgrade.
+#
+# Pinned to the 2026-05-06 nightly. Bump the date when refreshing — keep the
+# pin so the image is reproducible. yosys version inside this build: v0.64
+# (released 2026-04-09).
+ARG OSS_CAD_SUITE_DATE=2026-05-06
+ARG OSS_CAD_SUITE_DATE_NODASH=20260506
+RUN wget -q "https://github.com/YosysHQ/oss-cad-suite-build/releases/download/${OSS_CAD_SUITE_DATE}/oss-cad-suite-linux-x64-${OSS_CAD_SUITE_DATE_NODASH}.tgz" -O /tmp/oss-cad-suite.tgz && \
+    mkdir -p /opt && \
+    tar -xzf /tmp/oss-cad-suite.tgz -C /opt && \
+    rm /tmp/oss-cad-suite.tgz && \
+    /opt/oss-cad-suite/bin/yosys -V
+ENV PATH="/opt/oss-cad-suite/bin:${PATH}"
 
 # verilator
 RUN git clone https://github.com/verilator/verilator && \
