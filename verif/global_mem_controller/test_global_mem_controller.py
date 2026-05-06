@@ -603,3 +603,156 @@ async def test_m_araddr_upper_bits_zero_on_contr_read(dut):
         await RisingEdge(dut.clk)
         if dut.contr_rd_ack.value == 1:
             break
+
+
+# ----------------------------------------------------------------------------
+# CANARY: back-to-back contr_rd_en pulses expose single-deep pending latch
+# (MAST issue #21)
+# ----------------------------------------------------------------------------
+#
+# This test is the CANARY for the depth-1 limitation of `contr_rd_pending`
+# in `src/global_mem_controller.sv`. Today's caller (`gpu_controller.sv`)
+# holds each contr_rd request pending its own ack handshake, so depth-1 is
+# sufficient AT THIS MOMENT. Issue #21 demands a test that demonstrates the
+# gap so a future migration (e.g. AXI4 caller, or anything that can issue
+# back-to-back `contr_rd_en` pulses) does not silently lose reads.
+#
+# Failure mode being captured:
+#
+#   Cycle T0: contr_rd_en=1, contr_rd_addr=A, core1 still busy in adapter
+#             → grant_contr_rd=0 → pending<=1, pending_addr<=A
+#   Cycle T1: contr_rd_en=1, contr_rd_addr=B, core1 still busy in adapter
+#             → grant_contr_rd=0 → pending<=1, pending_addr<=B  (A LOST)
+#   Cycle T2..: cm_busy drops → grant fires → reads B → contr_rd_ack pulses
+#               EXACTLY ONCE. The first pulse (addr A) was silently dropped.
+#
+# Marked `expect_fail=True` so the cocotb regression bookkeeping treats the
+# test as PASS today (the assertion fires, proving the gap), and as FAIL the
+# day someone widens the latch to a FIFO without removing the marker. When
+# the latch is widened (FIFO depth N≥2 OR a `contr_rd_busy` back-pressure
+# output), update this test by:
+#   1. Removing `expect_fail=True` from the decorator
+#   2. Asserting that BOTH addr-A and addr-B reads landed in order
+#   3. Updating the docstring to reference the fix PR/ADR
+# ----------------------------------------------------------------------------
+
+@cocotb.test(expect_fail=True)
+async def test_back_to_back_contr_rd_drops_second(dut):
+    """CANARY for MAST #21: two contr_rd_en pulses on consecutive cycles
+    while the adapter is busy → only ONE contr_rd_ack fires.
+
+    The single-deep `contr_rd_pending` latch in
+    `src/global_mem_controller.sv` overwrites its captured address on every
+    new `contr_rd_en` pulse that cannot be granted. When two pulses arrive
+    back-to-back while the arbiter cannot service either, the FIRST pulse's
+    address is silently overwritten by the second — the first read is lost.
+
+    This is the pre-fix CANARY: today the test FAILS the functional
+    assertion (only 1 of 2 acks observed), and `@cocotb.test(expect_fail=
+    True)` flips that into a regression PASS. After the latch is widened
+    to a FIFO (depth N≥2) OR a `contr_rd_busy` back-pressure output is
+    added, this test will start passing functionally and the
+    `expect_fail=True` marker will need to be removed (the test will then
+    flip to FAIL on the regression, prompting an update). See MAST #21
+    for the gating decision.
+
+    Stimulus shape:
+      * Pre-load distinct values at addr_a and addr_b via the loader.
+      * Issue a core1 read at addr_c to occupy the AXI4 adapter
+        (cm_busy stays high for several cycles after we drop core1_rd_req).
+      * On cycle T0 (one cycle after dropping core1_rd_req, when core1
+        is no longer driving the bus but cm_busy is still high), pulse
+        `contr_rd_en=1, contr_rd_addr=addr_a`.
+      * On cycle T1, pulse `contr_rd_en=1, contr_rd_addr=addr_b`.
+      * Wait for the system to drain.
+      * Count `contr_rd_ack` pulses and capture data on each pulse.
+
+    Expected behaviour POST-FIX (FIFO widened): two acks, first==word_a,
+    second==word_b.
+    Actual behaviour TODAY (depth-1 latch): exactly one ack carrying
+    word_b — addr_a was overwritten in the pending register and never
+    issued.
+    """
+    cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_NS, unit="ns").start())
+    await reset_dut(dut)
+
+    # Pre-load distinct sentinels at three cache-line-aligned addresses.
+    addr_a, word_a = 0x0000_0200, 0xAAAA_AAAA
+    addr_b, word_b = 0x0000_0240, 0xBBBB_BBBB
+    addr_c, word_c = 0x0000_0280, 0xCCCC_CCCC
+    await contr_loader_write(dut, addr_a, word_a)
+    await contr_loader_write(dut, addr_b, word_b)
+    await contr_loader_write(dut, addr_c, word_c)
+    await RisingEdge(dut.clk)  # let the loader NBAs commit
+
+    # Kick off a core1 read at addr_c. After we drop core1_rd_req on the
+    # next cycle, the AXI4 adapter is still busy completing the read
+    # (cm_busy high), so the arbiter cannot grant any contr_rd that
+    # arrives during this window.
+    dut.core1_addr.value = addr_c
+    dut.core1_rd_req.value = 1
+    await RisingEdge(dut.clk)
+    dut.core1_rd_req.value = 0
+    # Now core1_active=0 but cm_busy=1. Any contr_rd_en pulse here will
+    # be deferred into the single-deep pending latch.
+
+    # Cycle T0: first contr_rd_en pulse (addr_a). Cannot be granted
+    # (cm_busy is high), so pending<=1 and pending_addr<=addr_a.
+    dut.contr_rd_addr.value = addr_a
+    dut.contr_rd_en.value = 1
+    await RisingEdge(dut.clk)
+
+    # Cycle T1: second contr_rd_en pulse (addr_b), still cannot be
+    # granted (cm_busy still high or grant blocked by inflight). The
+    # depth-1 latch overwrites pending_addr with addr_b — addr_a is
+    # now LOST.
+    dut.contr_rd_addr.value = addr_b
+    dut.contr_rd_en.value = 1
+    await RisingEdge(dut.clk)
+    dut.contr_rd_en.value = 0
+
+    # Drain: wait long enough for the core1 read AND any contr_rd_ack
+    # pulses to land. Count ack pulses and capture data.
+    contr_acks = []
+    saw_core1_ack = False
+    for _ in range(800):
+        await RisingEdge(dut.clk)
+        if dut.contr_rd_ack.value == 1:
+            contr_acks.append(int(dut.contr_rd_data.value))
+        if dut.core1_ack.value == 1:
+            saw_core1_ack = True
+        # Stop once everything has settled and we're past the expected
+        # post-fix ack window. 800 cycles is generous (a single AXI4
+        # round-trip on the simple master takes ~10 cycles).
+        if saw_core1_ack and len(contr_acks) >= 2:
+            break
+
+    # Sanity: the core1 read must have completed (otherwise something
+    # unrelated to issue #21 is broken).
+    assert saw_core1_ack, (
+        "core1 read at addr_c never acked — testbench setup is wrong, "
+        "this is not the depth-1 bug under test."
+    )
+
+    # CANARY assertion: post-fix we expect TWO contr_rd_ack pulses
+    # carrying word_a then word_b. Pre-fix we observe exactly one carrying
+    # word_b. The expect_fail=True decorator inverts the regression result
+    # so the suite is GREEN today (gap demonstrated) and turns RED the day
+    # someone widens the latch without updating this test.
+    assert len(contr_acks) == 2, (
+        f"single-deep contr_rd_pending latch dropped a request: expected "
+        f"2 contr_rd_ack pulses (one per contr_rd_en pulse), saw "
+        f"{len(contr_acks)}. Captured data: "
+        f"{[f'0x{x:08x}' for x in contr_acks]}. "
+        f"Expected post-fix: [0x{word_a:08x}, 0x{word_b:08x}]. "
+        f"This is the documented gap from MAST #21 — see the test "
+        f"docstring for how to update this test once the latch is widened."
+    )
+    assert contr_acks[0] == word_a, (
+        f"first contr_rd_ack should carry word_a=0x{word_a:08x}, "
+        f"got 0x{contr_acks[0]:08x}"
+    )
+    assert contr_acks[1] == word_b, (
+        f"second contr_rd_ack should carry word_b=0x{word_b:08x}, "
+        f"got 0x{contr_acks[1]:08x}"
+    )
