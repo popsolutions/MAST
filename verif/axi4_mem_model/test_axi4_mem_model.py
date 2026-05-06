@@ -293,3 +293,88 @@ async def test_loader_then_axi4_read(dut):
     assert rresp == AXI4_RESP_OKAY
     line5 = beats[0]
     assert (line5 >> 0) & 0xFFFFFFFF == 0x12345678, f"slot 0: {(line5>>0)&0xFFFFFFFF:08x}"
+
+
+# ----------------------------------------------------------------------------
+# Wide-address regression (issue #1: phys_addr_width = 48)
+#
+# Phase 1 of issue #1 declared phys_addr_width = 48. These tests confirm that
+# bits above [31:0] of the AXI4 address propagate end-to-end with no
+# truncation, no DECERR, and bit-exact round-trip data — i.e., that no signal
+# along the path was accidentally declared as 32 bits.
+# ----------------------------------------------------------------------------
+
+@cocotb.test()
+async def test_wide_address_single_beat(dut):
+    """Single-beat write/read at a > 4 GB physical address.
+
+    Address 0x0000_0100_0000_0080 sits at 1 TB + cache-line slot 4 of the
+    behavioral SRAM. The point is to exercise bits [40:32] of phys_addr_width
+    on the AXI4 address channel; the bit-exact round-trip plus OKAY response
+    confirm that the address path is wider than 32 bits all the way through
+    the slave's AW/AR registers.
+    """
+    cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_NS, units="ns").start())
+    await reset_dut(dut)
+
+    wide_addr = 0x0000_0100_0000_0080  # 1 TB + 0x80
+    test_data = (
+        0xC0FFEE00_C0FFEE01_C0FFEE02_C0FFEE03_C0FFEE04_C0FFEE05_C0FFEE06_C0FFEE07
+    )
+
+    bresp, _ = await axi_write(dut, addr=wide_addr, data=test_data)
+    assert bresp == AXI4_RESP_OKAY, (
+        f"wide-address write returned {bresp}; expected OKAY ({AXI4_RESP_OKAY})"
+    )
+
+    rresp, _, beats = await axi_read(dut, addr=wide_addr)
+    assert rresp == AXI4_RESP_OKAY, (
+        f"wide-address read returned {rresp}; expected OKAY ({AXI4_RESP_OKAY})"
+    )
+    assert len(beats) == 1
+    assert beats[0] == test_data, (
+        f"wide-address round-trip mismatch:\n"
+        f"  wrote {test_data:064x}\n"
+        f"  read  {beats[0]:064x}"
+    )
+
+
+@cocotb.test()
+async def test_wide_address_multi_beat_incr(dut):
+    """4-beat INCR burst at a > 100 TB base; validates wide-address INCR
+    accumulator (`wr_addr_q + (phys_addr_width'(1) << wr_size_q)`).
+
+    Base address 0xABCD_0000_0040 has bit[47] set, exercising the topmost
+    bit of phys_addr_width. The four beats land at distinct cache-line slots
+    (idx 2, 3, 4, 5 within the small behavioral SRAM via the low-order
+    address bits), so any truncation bug or accumulator miswiring around the
+    bit-32 boundary would cause read-back data to land in the wrong slot
+    and the per-beat compare to fail.
+    """
+    cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_NS, units="ns").start())
+    await reset_dut(dut)
+
+    base_addr = 0xABCD_0000_0040  # 48-bit address, bit[47] = 1
+    test_beats = [
+        0xAAAA_0000_AAAA_0001_AAAA_0002_AAAA_0003_AAAA_0004_AAAA_0005_AAAA_0006_AAAA_0007,
+        0xBBBB_0000_BBBB_0001_BBBB_0002_BBBB_0003_BBBB_0004_BBBB_0005_BBBB_0006_BBBB_0007,
+        0xCCCC_0000_CCCC_0001_CCCC_0002_CCCC_0003_CCCC_0004_CCCC_0005_CCCC_0006_CCCC_0007,
+        0xDDDD_0000_DDDD_0001_DDDD_0002_DDDD_0003_DDDD_0004_DDDD_0005_DDDD_0006_DDDD_0007,
+    ]
+
+    bresp, _ = await axi_write(dut, addr=base_addr, data=test_beats, length=3)
+    assert bresp == AXI4_RESP_OKAY, (
+        f"wide-address burst write returned {bresp}; expected OKAY"
+    )
+
+    rresp, _, beats = await axi_read(dut, addr=base_addr, length=3)
+    assert rresp == AXI4_RESP_OKAY, (
+        f"wide-address burst read returned {rresp}; expected OKAY"
+    )
+    assert len(beats) == 4
+    for i, (got, expected) in enumerate(zip(beats, test_beats)):
+        assert got == expected, (
+            f"wide-addr beat {i} mismatch:\n"
+            f"  expected {expected:064x}\n"
+            f"  got      {got:064x}"
+        )
