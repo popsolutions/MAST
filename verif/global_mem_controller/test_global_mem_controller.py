@@ -442,3 +442,164 @@ async def test_core1_rd_data_stable_cycle_after_ack(dut):
         "as `output reg` in src/global_mem_controller.sv (deferred "
         "design decision — needs an ADR)."
     )
+
+
+# ----------------------------------------------------------------------------
+# Regression: m_araddr[47:32] zero-extension observability (MAST issue #23)
+# ----------------------------------------------------------------------------
+#
+# `test_axi4_widths_wired` already proves the AXI4 master address bus is
+# 48 bits wide internally. What it does NOT prove is that the upper
+# `phys_addr_width - addr_width = 16` bits are actually driven to zero
+# at the cycle the adapter issues a real read (`m_arvalid` high). The
+# zero-extension on the address path lives in `global_mem_axi4_adapter`
+# (and, for the loader port, the inline `{{(phys_addr_width-addr_width)
+# {1'b0}}, contr_wr_addr}` concat in global_mem_controller.sv).
+#
+# A future refactor that accidentally lets stale upper bits leak into
+# `m_araddr[47:32]` would synthesize cleanly (the bus is wired), produce
+# valid AXI4 transactions (the slave masks down to its DEPTH), and pass
+# every existing functional test — but it would silently break any
+# real DDR controller plugged in behind axi4_mem_model that decodes the
+# full phys_addr_width range. These two tests are the canary.
+#
+# Both arbiter inputs (core1_rd and contr_rd) feed the same `m_araddr`
+# net through the adapter, so we guard both paths.
+# ----------------------------------------------------------------------------
+
+# Top 16 bits we expect to be zero on every issued read: phys_addr_width
+# (48) minus addr_width (32). Computed from the live bus width at runtime
+# rather than hard-coded, so a future taxonomy change widens the check.
+ARADDR_UPPER_BIT_LO = 32  # = addr_width
+ARADDR_UPPER_BIT_HI = EXPECTED_PHYS_ADDR_WIDTH  # exclusive
+
+
+async def _wait_for_arvalid(dut, timeout=300):
+    """Spin until u_adapter.m_arvalid pulses high; return the m_araddr value
+    sampled on that cycle (as a Python int).
+    """
+    for _ in range(timeout):
+        await RisingEdge(dut.clk)
+        if dut.u_adapter.m_arvalid.value == 1:
+            return int(dut.u_adapter.m_araddr.value)
+    raise TimeoutError("u_adapter.m_arvalid never asserted")
+
+
+def _assert_upper_bits_zero(araddr_value, expected_low_addr, label):
+    """Shared assertion: the captured 48-bit araddr must equal the
+    zero-extended 32-bit address (i.e. upper 16 bits are zero AND the
+    low 32 bits match what we requested)."""
+    expected = expected_low_addr & ((1 << EXPECTED_PHYS_ADDR_WIDTH) - 1)
+    upper = (araddr_value >> ARADDR_UPPER_BIT_LO) & (
+        (1 << (ARADDR_UPPER_BIT_HI - ARADDR_UPPER_BIT_LO)) - 1
+    )
+    low = araddr_value & ((1 << ARADDR_UPPER_BIT_LO) - 1)
+
+    assert upper == 0, (
+        f"[{label}] m_araddr[{ARADDR_UPPER_BIT_HI - 1}:{ARADDR_UPPER_BIT_LO}] "
+        f"= 0x{upper:04x}, expected 0 — zero-extension on the AXI4 address "
+        f"path leaked non-zero upper bits. Full m_araddr=0x{araddr_value:012x}, "
+        f"requested low addr=0x{expected_low_addr:08x}."
+    )
+    assert low == (expected_low_addr & ((1 << ARADDR_UPPER_BIT_LO) - 1)), (
+        f"[{label}] m_araddr[{ARADDR_UPPER_BIT_LO - 1}:0] = 0x{low:08x}, "
+        f"expected 0x{expected_low_addr:08x} — the low 32 bits of the "
+        "issued AXI4 read address don't match the requested address."
+    )
+    assert araddr_value == expected, (
+        f"[{label}] m_araddr=0x{araddr_value:012x}, expected exactly "
+        f"0x{expected:012x} (zero-extended {ARADDR_UPPER_BIT_LO}-bit "
+        "core address)."
+    )
+
+
+@cocotb.test()
+async def test_m_araddr_upper_bits_zero_on_external_read(dut):
+    """Regression for MAST issue #23: external 32-bit core1 read at
+    addr 0x8000_0000 must produce m_araddr = 0x0000_8000_0000 inside
+    the AXI4 manager — i.e. bit[31] preserved, bits[47:32] zero.
+
+    Even though the external `core1_addr` port is 32 bits wide (so we
+    physically cannot drive bit[47:32] from the port), the synthesis-
+    relevant range on the internal AXI4 bus must be cleanly zero-extended.
+    A non-zero leak in [47:32] would not break any existing functional
+    test (axi4_mem_model masks down to DEPTH_WORDS), but would silently
+    break a real DDR controller that decodes the full phys_addr_width
+    range.
+
+    Probes `dut.u_adapter.m_araddr` on the cycle when
+    `dut.u_adapter.m_arvalid` first asserts and asserts:
+      * full value == 0x0000_8000_0000
+      * bit[31] is set (i.e. the test address actually crossed the
+        32-bit boundary we care about)
+      * bits[47:32] == 0
+    """
+    cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_NS, unit="ns").start())
+    await reset_dut(dut)
+
+    # bit[31] set — proves the zero-extension survives crossing the
+    # bit-31 boundary (the high half of the 32-bit address space).
+    test_addr = 0x8000_0000
+
+    # Issue the read (analogous to core1_read but we don't wait for
+    # ack — we want to catch the AR phase, which happens before the
+    # AXI4 round-trip completes).
+    dut.core1_addr.value = test_addr
+    dut.core1_rd_req.value = 1
+    await RisingEdge(dut.clk)
+    dut.core1_rd_req.value = 0
+
+    araddr = await _wait_for_arvalid(dut)
+    _assert_upper_bits_zero(araddr, test_addr, label="core1_rd")
+
+    # Sanity: bit[31] really is set in the captured value (otherwise
+    # the test would silently pass on a 0-address regression).
+    assert (araddr >> 31) & 1 == 1, (
+        f"m_araddr bit[31] not set — captured 0x{araddr:012x}, "
+        "test stimulus did not exercise the bit-31 boundary."
+    )
+
+    # Drain the in-flight read so we leave the DUT in a clean state
+    # for any subsequent test in the same simulation. We don't care
+    # about the data, only that the handshake completes.
+    for _ in range(300):
+        await RisingEdge(dut.clk)
+        if dut.core1_ack.value == 1:
+            break
+
+
+@cocotb.test()
+async def test_m_araddr_upper_bits_zero_on_contr_read(dut):
+    """Mirror of `test_m_araddr_upper_bits_zero_on_external_read` for the
+    other arbiter input: contr_rd_*.
+
+    The arbiter routes both core1 and contr_rd onto the same `cm_addr`
+    wire that feeds `u_adapter.m_araddr`. A regression that broke
+    zero-extension on one path would likely break the other too — but
+    they could diverge if a future change adds a separate address mux
+    or pipeline. Guard both inputs so we catch either failure mode.
+    """
+    cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_NS, unit="ns").start())
+    await reset_dut(dut)
+
+    test_addr = 0x8000_0000
+
+    # Drive contr_rd; with core1 idle the arbiter grants this immediately.
+    dut.contr_rd_addr.value = test_addr
+    dut.contr_rd_en.value = 1
+    await RisingEdge(dut.clk)
+    dut.contr_rd_en.value = 0
+
+    araddr = await _wait_for_arvalid(dut)
+    _assert_upper_bits_zero(araddr, test_addr, label="contr_rd")
+
+    assert (araddr >> 31) & 1 == 1, (
+        f"m_araddr bit[31] not set — captured 0x{araddr:012x}, "
+        "test stimulus did not exercise the bit-31 boundary."
+    )
+
+    # Drain the in-flight contr read so the testbench ends cleanly.
+    for _ in range(300):
+        await RisingEdge(dut.clk)
+        if dut.contr_rd_ack.value == 1:
+            break
