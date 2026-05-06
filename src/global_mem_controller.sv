@@ -146,7 +146,6 @@ module global_mem_controller (
     // ===================================================================
 
     reg                       contr_rd_inflight;
-    reg [addr_width-1:0]      contr_rd_addr_q;
     // Pending bit: set when a contr_rd_en pulse arrives while core1 is
     // active or another contr_rd is already in flight. The bit is held
     // until the arbiter is able to issue the deferred read, at which
@@ -183,7 +182,6 @@ module global_mem_controller (
     always @(posedge clk or negedge rst) begin
         if (!rst) begin
             contr_rd_inflight     <= 1'b0;
-            contr_rd_addr_q       <= '0;
             contr_rd_pending      <= 1'b0;
             contr_rd_pending_addr <= '0;
             contr_rd_data         <= '0;
@@ -207,7 +205,6 @@ module global_mem_controller (
             // we're now servicing it).
             if (grant_contr_rd) begin
                 contr_rd_inflight <= 1'b1;
-                contr_rd_addr_q   <= contr_rd_req_addr;
                 contr_rd_pending  <= 1'b0;
             end
 
