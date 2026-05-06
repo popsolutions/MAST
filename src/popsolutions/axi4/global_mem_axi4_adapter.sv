@@ -40,6 +40,63 @@
 //   * 32-bit aligned core accesses only (lower 2 bits of addr ignored).
 //   * Single outstanding transaction at a time.
 //   * Single-beat AXI4 (AxLEN = 0); bursts are deferred to follow-up issues.
+//
+// =====================================================================
+//  PUBLIC CONTRACT — core_mem_rd_data stability (issue #27)
+// =====================================================================
+//
+// Stability invariant (NORMATIVE — consumers rely on this):
+//
+//   Once `core_mem_ack` pulses for a read transaction, the value driven on
+//   `core_mem_rd_data` on that ack cycle MUST remain bit-stable on every
+//   subsequent clock cycle until — but not including — the cycle on which
+//   the next `core_mem_rd_req` or `core_mem_wr_req` is sampled high by
+//   this adapter.
+//
+//   Restated: while the bus is idle (no new req), `core_mem_rd_data` does
+//   NOT glitch, does NOT change value, and does NOT go to X. The last
+//   read result is held verbatim. Consumers (e.g. global_mem_controller's
+//   `core1_*` port group, gpu_die.sv, and any current/future block that
+//   re-samples the read datum after the ack cycle) MUST be able to rely
+//   on this for correctness.
+//
+// Why this contract is written down:
+//
+//   The current implementation satisfies this trivially: it is single-
+//   outstanding and `core_mem_rd_data` is registered inside
+//   axi4_master_simple's `req_rdata` and held in place by
+//   core_axi4_adapter's slot mux until the next request arrives. No
+//   active read driver chooses to change the value while the bus is
+//   idle. That is an *implementation* property today, not a
+//   *port-level* property.
+//
+//   A future multi-outstanding adapter, response-forwarding optimization,
+//   or a refactor that drives `core_mem_rd_data` directly off `m_rdata`
+//   (or off any signal that toggles between transactions) could silently
+//   break this invariant — the affected consumer code (e.g. cm_rd_data
+//   re-sampling in the controller path that PR #25's regression test
+//   covers) would then glitch on the cycle after ack with no compile-time
+//   error and no test failure unless that test is timing-precise.
+//
+//   This block elevates the invariant to a *port contract* of
+//   global_mem_axi4_adapter. Any future implementation MUST preserve it.
+//   If a future design genuinely cannot honor it (e.g. true multi-
+//   outstanding with out-of-order response forwarding), the public port
+//   surface MUST be renamed (e.g. `core_mem_rd_data_valid` + a separate
+//   capture register exposed to the consumer) so existing consumers
+//   break loudly at integration time rather than silently at runtime.
+//
+// Test that enforces this contract:
+//
+//   verif/global_mem_axi4_adapter/test_global_mem_axi4_adapter.py ::
+//     test_rd_data_stable_between_requests
+//
+//   The test issues a read, captures `core_mem_rd_data` on the ack
+//   cycle, then holds the bus idle for >=8 clocks while re-sampling
+//   `core_mem_rd_data` on every cycle. Every sample must equal the
+//   on-ack value.
+//
+// =====================================================================
 
 `default_nettype none
 

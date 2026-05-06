@@ -173,3 +173,107 @@ async def test_busy_during_transaction(dut):
     assert saw_busy, "core_mem_busy never asserted during the transaction"
     await RisingEdge(dut.clk)
     assert dut.core_mem_busy.value == 0
+
+
+@cocotb.test()
+async def test_rd_data_stable_between_requests(dut):
+    """Enforces the public stability contract on `core_mem_rd_data`.
+
+    Issue #27 / PR #25 follow-up: consumers (e.g. global_mem_controller's
+    `core1_*` port group, gpu_die.sv) re-sample `core_mem_rd_data` on
+    cycles AFTER the ack cycle. The adapter is therefore required to
+    hold the read datum bit-stable from the ack cycle through every
+    idle cycle until — but not including — the cycle on which the next
+    `core_mem_rd_req` or `core_mem_wr_req` is sampled high.
+
+    Procedure:
+      1. Pre-load known data at addr A via a write.
+      2. Pre-load DIFFERENT known data at addr B (a separate cache line)
+         so the underlying memory backing definitely toggles between
+         the two values — this means a future broken implementation
+         that, say, drove `core_mem_rd_data` off `m_rdata` (which IS
+         allowed to glitch when the AXI4 bus does other work) would be
+         caught.
+      3. Issue a read at addr A; capture the value on the ack cycle.
+      4. Hold the bus idle (rd_req = wr_req = 0) for IDLE_HOLD_CYCLES
+         cycles, sampling `core_mem_rd_data` every cycle. Each sample
+         MUST equal the captured on-ack value, bit-exact.
+
+    Failing this test indicates an implementation-level optimization
+    has silently broken the port-level invariant documented in
+    src/popsolutions/axi4/global_mem_axi4_adapter.sv. See that file's
+    'PUBLIC CONTRACT - core_mem_rd_data stability' header block for the
+    full normative statement and remediation guidance.
+    """
+    cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_NS, unit="ns").start())
+    await reset_dut(dut)
+
+    addr_a = 0x100
+    addr_b = 0x140  # different cache line (32-byte stride)
+    word_a = 0xA5A5A5A5
+    word_b = 0x5A5A5A5A
+
+    # Pre-load both addresses so memory holds distinct, distinguishable
+    # values. This makes a hypothetical broken implementation that
+    # forwarded m_rdata directly visible — m_rdata would necessarily
+    # change between transactions, so any leakage onto core_mem_rd_data
+    # during the idle window would show up.
+    await core_write(dut, addr_a, word_a)
+    await core_write(dut, addr_b, word_b)
+
+    # Issue a read of addr_a; capture the on-ack datum manually so we
+    # see the EXACT cycle the contract starts on.
+    dut.core_mem_addr.value = addr_a
+    dut.core_mem_rd_req.value = 1
+    await RisingEdge(dut.clk)
+    dut.core_mem_rd_req.value = 0
+
+    on_ack_value = None
+    for _ in range(300):
+        await RisingEdge(dut.clk)
+        if dut.core_mem_ack.value == 1:
+            on_ack_value = int(dut.core_mem_rd_data.value)
+            break
+    assert on_ack_value is not None, "read of addr_a never acked"
+    assert on_ack_value == word_a, (
+        f"sanity: on-ack rd_data mismatch: expected 0x{word_a:08x}, "
+        f"got 0x{on_ack_value:08x}"
+    )
+
+    # Now the contract window. Hold the bus idle and re-sample every
+    # cycle. Each sample must equal on_ack_value.
+    IDLE_HOLD_CYCLES = 8
+    dut.core_mem_rd_req.value = 0
+    dut.core_mem_wr_req.value = 0
+    # Stir the address bus to make sure rd_data isn't accidentally
+    # combinational on `core_mem_addr` — that would also be a contract
+    # violation (consumers may park any address there while idle).
+    dut.core_mem_addr.value = 0xDEAD0000
+
+    for cycle in range(IDLE_HOLD_CYCLES):
+        await RisingEdge(dut.clk)
+        sample = int(dut.core_mem_rd_data.value)
+        assert sample == on_ack_value, (
+            f"core_mem_rd_data GLITCHED on idle cycle +{cycle + 1} after ack: "
+            f"on-ack value was 0x{on_ack_value:08x}, "
+            f"now reads 0x{sample:08x}. "
+            f"This violates the stability contract documented in "
+            f"src/popsolutions/axi4/global_mem_axi4_adapter.sv "
+            f"('PUBLIC CONTRACT - core_mem_rd_data stability')."
+        )
+        # Also: busy/ack must stay deasserted during the idle window.
+        assert dut.core_mem_busy.value == 0, (
+            f"core_mem_busy unexpectedly asserted on idle cycle +{cycle + 1}"
+        )
+        assert dut.core_mem_ack.value == 0, (
+            f"core_mem_ack unexpectedly asserted on idle cycle +{cycle + 1} "
+            f"(no new request was issued)"
+        )
+
+    # Final cross-check: a follow-up read of addr_b returns word_b.
+    # Confirms the adapter is still functional and the held value was
+    # genuinely the prior result, not a stuck driver.
+    got_b = await core_read(dut, addr_b)
+    assert got_b == word_b, (
+        f"follow-up read mismatch: expected 0x{word_b:08x}, got 0x{got_b:08x}"
+    )
