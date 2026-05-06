@@ -121,12 +121,15 @@ jobs:
       - name: Run synth_ecp5 smoke pass on src/int/mul_pipeline_32bit.sv
         run: |
           # Smoke-tests the open ECP5 synth path against a rev-A RTL module.
-          # Picks a self-contained module (mul_pipeline_32bit) so the smoke
-          # test does not pull in the AXI4 fabric. If this passes, the
-          # yosys + lattice techlib half of the open ECP5 flow is live for
-          # rev-A. See cicd/Dockerfile and #36.
+          # Picks mul_pipeline_32bit (124 lines, no module instances) so the
+          # smoke test does not pull in the AXI4 fabric. The module references
+          # the `assert_known` macro from src/assert.sv, so we feed both files
+          # to read_verilog (assert.sv first so the macros are in scope when
+          # the module body is parsed). If this passes, the yosys + lattice
+          # techlib half of the open ECP5 flow is live for rev-A.
+          # See cicd/Dockerfile and #36.
           mkdir -p /tmp/smoke
-          yosys -p "read_verilog -sv src/int/mul_pipeline_32bit.sv; synth_lattice -family ecp5 -top mul_pipeline_32bit; write_json /tmp/smoke/mul_pipeline_32bit.json" \
+          yosys -p "read_verilog -sv src/assert.sv src/int/mul_pipeline_32bit.sv; synth_lattice -family ecp5 -top mul_pipeline_32bit; write_json /tmp/smoke/mul_pipeline_32bit.json" \
             | tee /tmp/smoke/yosys.log
           test -s /tmp/smoke/mul_pipeline_32bit.json
           {
