@@ -2,12 +2,13 @@
 
 # ADR-014 — Inter-card link architecture
 
-**Status:** **DRAFT — NOT YET ACCEPTED.** Research only. Awaits human (cooperative) ratification.
+**Status:** **Proposed.** Awaits Agent R + human (cooperative) ratification before moving to Accepted.
 
 **Date opened:** 2026-05-05 (issue #9)
 **Date of this draft:** 2026-05-05
+**Date moved to Proposed:** 2026-05-06 (issue #34, this PR — adds SerDes IP source decision; see §12)
 **Author:** Agent 1 (RTL Architect)
-**Reviewers required for acceptance:** human (Marcos / cooperative members)
+**Reviewers required for acceptance:** Agent R (Reviewer) + human (Marcos / cooperative members)
 
 ---
 
@@ -294,23 +295,37 @@ If the cooperative ratifies the recommendation:
 1. **Now (already landed):** RTL skeleton in
    `src/popsolutions/interconnect/intercard_link.sv` (#10 / PR #14, merged
    2026-05-05) locks the interface contract for the Stays PCB.
-2. **Sprint 2 / agent-1:** Implement custom LVDS framing + CRC + flow
-   control on top of the skeleton. Estimated 500 lines RTL + 8–10
-   cocotb tests.
-3. **Sprint 2 / agent-2:** Stays PCB lays out connector for 4 lanes,
+   InnerJib7EA `intercard_link_upstream.sv` / `_downstream.sv` port-surface
+   stubs (PR #15, merged 2026-05-05) lock the per-role connector pinout.
+2. **Sprint 2 / agent-1 — PHY+PCS:** Wrap
+   `enjoy-digital/liteiclink/serdes_ecp5.py` (BSD-2-Clause) for the
+   ECP5 DCU SerDes + 8b/10b PCS. Pre-generate the Verilog once
+   (Option B), commit it under `popsolutions/intercard/`, and add a
+   thin SystemVerilog shim (Option C) to expose a stable port surface.
+   See `docs/popsolutions/architecture/intercard-serdes-integration.md`
+   for the full integration design and reproducer command line.
+   Estimated ~150 lines of shim RTL plus the vendored generated
+   Verilog; the heavy lifting (DCU init, 8b/10b, comma alignment, CDR)
+   moves out of our maintenance burden onto upstream.
+3. **Sprint 2 / agent-1 — link layer:** Custom framing + CRC + flow
+   control on top of the SerDes wrap. Estimated ~500 lines RTL +
+   8–10 cocotb tests (the structural-only `test_two_card_pair.sv` from
+   InnerJib7EA PR #15 evolves into a real loopback timing test —
+   `test_serdes_loopback.py`).
+4. **Sprint 2 / agent-2:** Stays PCB lays out connector for 4 lanes,
    matched-impedance backplane traces, GbE PHY for host link.
-4. **Sprint 3 / agent-3:** Spanker driver multi-transport link abstraction
+5. **Sprint 3 / agent-3:** Spanker driver multi-transport link abstraction
    (GbE control plane + LVDS data plane).
-5. **Sprint 3 / agent-1:** Integration test on InnerJib7EA dual-card
+6. **Sprint 3 / agent-1:** Integration test on InnerJib7EA dual-card
    bring-up.
-6. **Rev-B revisit (post-tape-out):** Reopen this ADR to evaluate adding
+7. **Rev-B revisit (post-tape-out):** Reopen this ADR to evaluate adding
    PCIe p2p transport (now that LitePCIe-on-ECP5 has matured upstream)
    and/or CXL on CertusPro-NX.
 
 ## 10. Consequences
 
 (To be filled in once the ADR is **Accepted**. Currently empty because
-this is a DRAFT.)
+this is **Proposed**, not yet Accepted.)
 
 ## 11. References
 
@@ -332,3 +347,111 @@ this is a DRAFT.)
 * `intercard_pkg.sv` (this repo, `src/popsolutions/interconnect/`) —
   current `INTERCARD_LANES` default of 4 already aligns with the
   recommendation here.
+* `docs/popsolutions/architecture/intercard-serdes-integration.md`
+  (this repo, this PR) — the SerDes IP-source design proposal that
+  underpins §12.
+* Issue [#34](https://github.com/popsolutions/MAST/issues/34) — the
+  cross-stream issue raised by Agent R requesting that this ADR
+  amendment land before the inter-card transceiver body is implemented.
+* Stays PR #31 (merged 2026-05-06) —
+  `Stays/docs/upstream-contributions/2026-05-06-prjtrellis-ecp5-85f.md`.
+  The recon that confirmed `liteiclink/serdes_ecp5.py` drives 1.25 Gbps
+  SGMII as a directly supported preset, production-validated on
+  Versa-ECP5 + ECPIX-5 (LFE5UM5G-85F).
+* Stays PR #34 (merged 2026-05-06) —
+  `Stays/docs/upstream-contributions/2026-05-06-liteeth-ecp5-sgmii.md`.
+  Establishes that rev-A pulls `liteiclink` in transitively for the
+  GbE host link (1 lane × 1.25 Gbps SGMII), so the inter-card
+  decision adds zero new upstream dependency.
+* `enjoy-digital/liteiclink` (BSD-2-Clause) — the upstream library
+  whose `serdes_ecp5.py` we wrap.
+
+## 12. SerDes IP source decision (added 2026-05-06)
+
+Added in response to issue
+[popsolutions/MAST#34](https://github.com/popsolutions/MAST/issues/34)
+("Inter-card SerDes RTL: wrap liteiclink/serdes_ecp5.py rather than
+hand-roll DCU primitives") to convert ADR-014's PHY-layer choice from
+implicit to explicit before the transceiver body is implemented.
+
+### 12.1 Decision
+
+**The PHY+PCS layer of the inter-card link wraps
+`enjoy-digital/liteiclink/serdes_ecp5.py` rather than hand-rolling
+the Lattice ECP5 DCU primitive.**
+
+The link layer (framing, CRC, flow control) and transport layer
+(replay, ordering, routing) above the SerDes remain custom RTL. Only
+the PHY+PCS — the SerDes serializer/deserializer, 8b/10b encoder/
+decoder, comma alignment, and clock-data recovery — is delegated to
+liteiclink.
+
+### 12.2 Rationale
+
+Three factors drove this decision:
+
+1. **Upstream is production-validated on our exact silicon class.**
+   `liteiclink/serdes_ecp5.py` already drives 1.25 Gbps SGMII on
+   LFE5UM5G-85F via the upstream benches at
+   `liteiclink/bench/serdes/versa_ecp5.py` (Lattice Versa-ECP5) and
+   `liteiclink/bench/serdes/ecpix5.py` (LambdaConcept ECPIX-5). Both
+   boards are -85F-class; rev-A is in the same chip class. (Stays
+   PR #31, recon §3 / §5.) Hand-rolling re-implements work that
+   already runs in production on identical silicon.
+2. **Rev-A already depends on liteiclink for the host link.** Stays
+   PR #34's LiteEth ECP5 SGMII recon established that the rev-A
+   GbE host link uses `liteeth.phy.ecp5sgmii.LiteEthPHYECP5SGMII`,
+   which itself wraps `liteiclink/serdes_ecp5.py` for the SGMII PHY.
+   The inter-card link bonds 4 lanes of the **same** primitive that
+   the host link uses 1 lane of — same DCU, same line rate, same
+   8b/10b encoding. Rev-A pulls liteiclink in either way.
+3. **License compatibility is clean.** liteiclink is BSD-2-Clause;
+   our hardware/software/docs license stack (CERN-OHL-S v2 /
+   Apache-2.0 / CC-BY-SA-4.0) absorbs BSD-2 cleanly via attribution
+   in the SPDX header on the vendored file plus a `NOTICE.md` entry.
+
+### 12.3 Integration approach
+
+The implementation follows **Option B + C** from
+`docs/popsolutions/architecture/intercard-serdes-integration.md`:
+
+- **Option B (pre-generate + check in):** the LiteX/Migen Python
+  generator runs **once** as a deliberate maintenance step. The
+  resulting Verilog is committed to the repo as
+  `popsolutions/InnerJib7EA/src/popsolutions/intercard/intercard_serdes_generated.v`
+  with a header recording the upstream commit hash, the OSS CAD
+  Suite tag, and the exact Python invocation. Re-generation is a
+  deliberate maintenance PR (reviewable diff), not a build step.
+- **Option C (SystemVerilog shim):** a thin wrapper at
+  `popsolutions/InnerJib7EA/src/popsolutions/intercard/intercard_serdes.sv`
+  instantiates the generated module and exposes our project's
+  stable port surface (`INTERCARD_LANES`, `INTERCARD_LANE_WIDTH`,
+  AXI-Stream upstream, role-dependent forwarded-clock direction).
+  The shim insulates the rest of the RTL from liteiclink-internal
+  port renames across upstream versions.
+
+This combination keeps the build hermetic against Python toolchain
+drift (anyone with Verilator + iverilog can lint the design) while
+keeping liteiclink upgrades visible in code review and isolating
+the project from upstream API churn.
+
+### 12.4 What this section does NOT change
+
+- §5 hybrid recommendation (GbE control plane + LVDS data plane).
+- §4 bandwidth model.
+- §7 connector lane count (4 lanes minimum, 4 recommended).
+- §6 CXL deferral.
+- §8 open questions for human ratification (those remain the gate
+  to **Accepted** status — adding §12 does not bypass them).
+
+### 12.5 What this section adds to the open-questions list
+
+§8 gains one item, expressed conditionally:
+
+5. **Does the cooperative accept the supply-chain dependency on
+   `enjoy-digital/liteiclink` (BSD-2-Clause) for the rev-A inter-card
+   PHY+PCS layer?** The dependency is already accepted for the rev-A
+   GbE host link via LiteEth + LiteICLink-SGMII (Stays PR #34, ADR-001
+   amendment). Extending it from 1 lane to 4 lanes is the same
+   primitive, no new dependency surface — but the cooperative should
+   acknowledge the choice explicitly before §12 binds.
