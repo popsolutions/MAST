@@ -35,6 +35,13 @@ What these tests cover:
   * `test_arbiter_priority_core1_wins` — when core1 and contr_rd
                                 request simultaneously, core1 wins
                                 and contr_rd waits.
+  * `test_core1_rd_data_stable_cycle_after_ack` — regression test
+                                for MAST issue #22. Guards against
+                                downstream callers silently breaking
+                                when `core1_rd_data` switched from
+                                `output reg` to `output wire` in
+                                PR #19. See test docstring for the
+                                full subtlety.
 
 The bit[47]-set address case from the dispatch brief is observed
 INSIDE `test_axi4_widths_wired` (where we read the actual wire width
@@ -326,4 +333,112 @@ async def test_arbiter_priority_core1_wins(dut):
     )
     assert contr_data == word_b, (
         f"contr_rd got wrong data: 0x{contr_data:08x}, expected 0x{word_b:08x}"
+    )
+
+
+# ----------------------------------------------------------------------------
+# Regression: core1_rd_data stability around the ack cycle (MAST issue #22)
+# ----------------------------------------------------------------------------
+
+@cocotb.test()
+async def test_core1_rd_data_stable_cycle_after_ack(dut):
+    """Regression test for MAST issue #22 (post-PR-#19 follow-up).
+
+    SUBTLETY (load-bearing — read carefully):
+
+    PR #19 changed `core1_rd_data` in `src/global_mem_controller.sv`
+    from `output reg` (registered) to `output wire` (combinational
+    `assign core1_rd_data = cm_rd_data;`). All upstream callers
+    (`gpu_die.sv`, `test/behav/compute_unit_and_mem.sv`,
+    `test/behav/core_and_mem.sv`) connect via plain wire assignments
+    — there is currently no caller that latches `core1_rd_data`
+    independently of `core1_ack`.
+
+    A downstream caller (RISC-V load-store unit, DMA engine, etc.)
+    that observes `core1_ack=1` on cycle T and reads `core1_rd_data`
+    via a flop on cycle T+1 is doing the textbook handshake-and-
+    sample pattern. That pattern depends on `core1_rd_data` being
+    *stable* until at least the next active edge after the ack.
+
+    With the new combinational drive this is true *today* because
+    `cm_rd_data` (driven by the AXI4 adapter's response register)
+    holds its value until the next AXI4 read response lands —
+    which, in the current single-outstanding adapter, only happens
+    after the caller issues a new `core1_rd_req`. So a future
+    optimization (multi-outstanding adapter, response forwarding,
+    pipelined arbiter) could silently glitch `core1_rd_data` between
+    the ack cycle and the cycle after, producing wrong silicon
+    without breaking any existing test.
+
+    THIS TEST is the canary. It:
+      1. Issues a core1 read for a known value at addr_A.
+      2. Waits for `core1_ack`.
+      3. Samples `core1_rd_data` on the ack cycle (T).
+      4. Holds all inputs idle for one more clock (no new req).
+      5. Re-samples `core1_rd_data` on cycle T+1.
+      6. Asserts the on-ack value matches what was written AND the
+         T+1 sample equals the T sample (i.e. the data did not
+         glitch in the cycle after ack while the bus was idle).
+
+    A future regression that introduces a combinational glitch —
+    for example because `cm_rd_data` starts mirroring the AXI4
+    R-channel before the response is captured — will trip this
+    assertion and flag the change at PR-review time instead of
+    in silicon.
+
+    Out of scope (deliberate): re-engineering `core1_rd_data` back
+    to a registered output. That's a design decision that needs
+    its own ADR; this test only guards the current contract.
+    """
+    cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_NS, unit="ns").start())
+    await reset_dut(dut)
+
+    # Pre-load a known value at a known address via the controller
+    # loader back-door (same pattern as test_contr_loader_then_core1_read,
+    # so we don't depend on the write path also being correct).
+    addr = 0x0000_0080  # cache-line aligned, slot 0
+    word = 0xA5A5_5A5A
+    await contr_loader_write(dut, addr, word)
+    await RisingEdge(dut.clk)  # let the loader NBA commit
+
+    # Issue a core1 read.
+    dut.core1_addr.value = addr
+    dut.core1_rd_req.value = 1
+    await RisingEdge(dut.clk)
+    dut.core1_rd_req.value = 0
+
+    # Spin until the ack cycle. On the cycle when core1_ack is high,
+    # capture core1_rd_data IMMEDIATELY (before the next RisingEdge),
+    # which is the value any downstream flop sampling on (clk &&
+    # core1_ack) would latch.
+    on_ack_data = None
+    for _ in range(300):
+        await RisingEdge(dut.clk)
+        if dut.core1_ack.value == 1:
+            on_ack_data = int(dut.core1_rd_data.value)
+            break
+    assert on_ack_data is not None, "core1 read never acked"
+    assert on_ack_data == word, (
+        f"on-ack core1_rd_data mismatch: got 0x{on_ack_data:08x}, "
+        f"expected 0x{word:08x}"
+    )
+
+    # Hold the bus idle (no new req) for one more clock and re-sample.
+    # If a future change makes core1_rd_data combinationally track an
+    # AXI4 response that lands without our request, this sample will
+    # diverge.
+    assert dut.core1_rd_req.value == 0
+    assert dut.core1_wr_req.value == 0
+    await RisingEdge(dut.clk)
+    cycle_after_ack_data = int(dut.core1_rd_data.value)
+
+    assert cycle_after_ack_data == on_ack_data, (
+        "core1_rd_data glitched in the cycle AFTER ack while the bus "
+        "was idle — a downstream caller doing the canonical "
+        "ack-then-flop pattern would now latch the wrong value. "
+        f"on-ack=0x{on_ack_data:08x} vs cycle-after=0x{cycle_after_ack_data:08x}. "
+        "See MAST issue #22 / PR #19 for context. If this is an "
+        "intentional protocol change, please re-register core1_rd_data "
+        "as `output reg` in src/global_mem_controller.sv (deferred "
+        "design decision — needs an ADR)."
     )
